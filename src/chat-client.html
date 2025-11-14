@@ -1,0 +1,260 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime Chat - Socket.IO Client</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 12px; }
+    #app { max-width: 900px; margin: 0 auto; display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }
+    .card { border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
+    #messages { height: 60vh; overflow-y: auto; background:#fafafa; padding:8px; border-radius:4px; }
+    .msg { margin-bottom:8px; }
+    .my { text-align:right; }
+    .users { max-height: 60vh; overflow-y:auto; }
+    input, button, textarea { width:100%; padding:8px; margin-top:6px; box-sizing:border-box; }
+    .user-btn { display:block; padding:6px; margin:6px 0; cursor:pointer; border:1px solid #eee; border-radius:4px; background:#fff; text-align:left; }
+  </style>
+</head>
+<body>
+  <h2>Realtime Chat (Socket.IO)</h2>
+  <div id="app">
+    <div class="card">
+      <h3>Auth</h3>
+      <input id="name" placeholder="Name" />
+      <input id="email" placeholder="Email" />
+      <input id="password" type="password" placeholder="Password" />
+      <button id="registerBtn">Register</button>
+      <button id="loginBtn">Login</button>
+      <hr />
+      <h3>Connected Users</h3>
+      <div id="users" class="users"></div>
+      <p><small>Click a user to start private chat</small></p>
+    </div>
+
+    <div class="card">
+      <h3>Chat</h3>
+      <div id="messages"></div>
+      <textarea id="messageInput" rows="3" placeholder="Type a message..."></textarea>
+      <button id="sendBtn">Send</button>
+      <p id="status"></p>
+    </div>
+  </div>
+
+  <!-- Socket.io client -->
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+  <script>
+
+    // === CONFIG ===
+    const API_BASE = "http://localhost:5000";
+    const SOCKET_URL = "http://localhost:5000";
+
+    // === DOM ===
+    const nameEl = document.getElementById("name");
+    const emailEl = document.getElementById("email");
+    const passEl = document.getElementById("password");
+    const registerBtn = document.getElementById("registerBtn");
+    const loginBtn = document.getElementById("loginBtn");
+    const usersEl = document.getElementById("users");
+    const messagesEl = document.getElementById("messages");
+    const messageInput = document.getElementById("messageInput");
+    const sendBtn = document.getElementById("sendBtn");
+    const statusEl = document.getElementById("status");
+
+    // === STATE ===
+    let socket = null;
+    let token = null;
+    let me = null;
+    let users = [];
+    let currentChatUser = null;
+
+    // === Helpers ===
+    function setStatus(txt) {
+      statusEl.textContent = txt;
+    }
+
+    function appendMessage(text, fromMe = false) {
+      const d = document.createElement("div");
+      d.className = "msg " + (fromMe ? "my" : "");
+      d.textContent = text;
+      messagesEl.appendChild(d);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderUsers() {
+      usersEl.innerHTML = "";
+      users.forEach(u => {
+        if (u._id === me?.id) return;
+        const btn = document.createElement("button");
+        btn.className = "user-btn";
+        btn.textContent = u.name + " (" + (u.email || "") + ")";
+        btn.onclick = () => {
+          currentChatUser = u;
+          messagesEl.innerHTML = "";
+          appendMessage("Chatting with " + u.name);
+          loadConversation(me.id, u._id);
+        };
+        usersEl.appendChild(btn);
+      });
+    }
+
+    // === AUTH API ===
+    async function register() {
+      try {
+        const res = await fetch(API_BASE + "/api/users/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: nameEl.value,
+            email: emailEl.value,
+            password: passEl.value
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message);
+
+        token = data.token;
+        me = data.user;
+
+        setStatus("Registered as " + me.name);
+        afterAuth();
+      } catch (err) {
+        alert("Register error: " + err.message);
+      }
+    }
+
+    async function login() {
+      try {
+        const res = await fetch(API_BASE + "/api/users/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: emailEl.value,
+            password: passEl.value
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message);
+
+        token = data.token;
+        me = data.user;
+
+        setStatus("Logged in as " + me.name);
+        afterAuth();
+      } catch (err) {
+        alert("Login error: " + err.message);
+      }
+    }
+
+    // === After Login ===
+    async function afterAuth() {
+      connectSocket();
+      await fetchUsers();
+    }
+
+    async function fetchUsers() {
+      try {
+        const res = await fetch(API_BASE + "/api/users", {
+          headers: { Authorization: "Bearer " + token }
+        });
+
+        if (!res.ok) return console.error("Error loading users");
+
+        users = await res.json();
+        renderUsers();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function loadConversation(userA, userB) {
+      try {
+        const url = new URL(API_BASE + "/api/messages/conversation");
+        url.searchParams.set("userA", userA);
+        url.searchParams.set("userB", userB);
+
+        const res = await fetch(url, {
+          headers: { Authorization: "Bearer " + token }
+        });
+
+        const msgs = await res.json();
+
+        msgs.forEach(m => {
+          const fromMe = m.sender._id === me.id;
+          appendMessage((fromMe ? "Me: " : m.sender.name + ": ") + m.content, fromMe);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // === SOCKET.IO ===
+    function connectSocket() {
+      socket = io(SOCKET_URL, {
+        auth: { token }
+      });
+
+      socket.on("connect", () => {
+        setStatus("Socket Connected");
+        socket.emit("user_connected", { userId: me.id });
+      });
+
+      socket.on("receive_message", (data) => {
+        const fromMe = data.sender === me.id;
+        appendMessage((fromMe ? "Me: " : data.senderName + ": ") + data.content, fromMe);
+      });
+
+      socket.on("disconnect", () => {
+        setStatus("Socket Disconnected");
+      });
+    }
+
+    // === Send Message ===
+    async function sendMessage() {
+      if (!currentChatUser) return alert("Select a user first!");
+
+      const content = messageInput.value.trim();
+      if (!content) return;
+
+      appendMessage("Me: " + content, true);
+
+      socket.emit("send_message", {
+        sender: me.id,
+        receiver: currentChatUser._id,
+        content
+      });
+
+      await fetch(API_BASE + "/api/messages/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token
+        },
+        body: JSON.stringify({
+          sender: me.id,
+          receiver: currentChatUser._id,
+          content
+        })
+      });
+
+      messageInput.value = "";
+    }
+
+    // === Events ===
+    registerBtn.onclick = register;
+    loginBtn.onclick = login;
+    sendBtn.onclick = sendMessage;
+
+    messageInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+  </script>
+</body>
+</html>
